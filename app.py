@@ -10,6 +10,7 @@ import uuid
 import tempfile
 import openpyxl
 import sqlite3
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
@@ -428,6 +429,80 @@ def dong_bo_ton_kho():
     conn.commit()
     conn.close()
     return 'Đã đồng bộ tồn kho thành công!'
+
+@app.route('/upload-txt', methods=['POST'])
+def upload_txt():
+    if 'txt_file' not in request.files:
+        return jsonify({'status': 'error', 'message': 'Không có file được gửi lên'})
+    file = request.files['txt_file']
+    if file.filename == '':
+        return jsonify({'status': 'error', 'message': 'Chưa chọn file'})
+    filename = secure_filename(file.filename)
+    content = file.read().decode('utf-8')
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    conn = get_db_connection()
+    updated = 0
+    for line in lines:
+        cols = [c.strip() for c in line.split('|')]
+        if len(cols) < 14:
+            continue
+        group_use = cols[0]
+        product_code = cols[1]
+        classify = cols[2]
+        part_code = cols[3]
+        material_name = cols[4]
+        specification = cols[5]
+        brand = cols[6]
+        unit = cols[7]
+        quantity = cols[8]
+        location = cols[-1]
+        # Cộng dồn quantity nếu đã có part_code
+        material = conn.execute('SELECT * FROM MATERIAL WHERE part_code=?', (part_code,)).fetchone()
+        if material:
+            try:
+                new_qty = int(material['quantity']) + int(quantity)
+            except Exception:
+                new_qty = quantity
+            conn.execute('''UPDATE MATERIAL SET group_name=?, product_code=?, classification=?, material_name=?, specification=?, brand_name=?, unit=?, quantity=?, location=?, updated_at=CURRENT_TIMESTAMP WHERE part_code=?''',
+                (group_use, product_code, classify, material_name, specification, brand, unit, new_qty, location, part_code))
+        else:
+            conn.execute('''INSERT INTO MATERIAL (group_name, product_code, classification, part_code, material_name, specification, brand_name, unit, quantity, location, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)''',
+                (group_use, product_code, classify, part_code, material_name, specification, brand, unit, quantity, location))
+        updated += 1
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'success', 'message': f'Đã cập nhật {updated} dòng'})
+
+@app.route('/bo-sung-bao-cao', methods=['POST'])
+def bo_sung_bao_cao():
+    data = request.get_json()
+    required_fields = [
+        'group_use', 'product_code', 'classify', 'part_code', 'material_name', 'specification', 'brand', 'unit', 'location',
+        'opening_stock', 'input', 'output', 'closing_stock', 'inventory', 'last_update', 'last_time'
+    ]
+    for field in required_fields:
+        if not data.get(field):
+            return jsonify({'status': 'error', 'message': f'Thiếu thông tin: {field}'}), 400
+    conn = get_db_connection()
+    # Kiểm tra nếu đã có part_code thì cập nhật, chưa có thì thêm mới
+    part_code = data['part_code']
+    material = conn.execute('SELECT * FROM MATERIAL WHERE part_code=?', (part_code,)).fetchone()
+    if material:
+        # Cập nhật các trường liên quan đến báo cáo
+        conn.execute('''UPDATE MATERIAL SET group_name=?, product_code=?, classification=?, material_name=?, specification=?, brand_name=?, unit=?, location=?, updated_at=? WHERE part_code=?''',
+            (data['group_use'], data['product_code'], data['classify'], data['material_name'], data['specification'], data['brand'], data['unit'], data['location'], data['last_update'], part_code))
+    else:
+        # Thêm mới
+        conn.execute('''INSERT INTO MATERIAL (group_name, product_code, classification, part_code, material_name, specification, brand_name, unit, location, quantity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (data['group_use'], data['product_code'], data['classify'], data['part_code'], data['material_name'], data['specification'], data['brand'], data['unit'], data['location'], data['closing_stock'], data['last_update'], data['last_update']))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'success', 'message': 'Bổ sung dữ liệu báo cáo thành công!'})
+
+@app.route('/bo-sung-du-lieu')
+def bo_sung_du_lieu():
+    return render_template('bo_sung_du_lieu.html')
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
